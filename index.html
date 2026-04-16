@@ -46,8 +46,8 @@
             margin-bottom: 5px;
         }
 
-        /* 検索と地図のエリア */
-        .search-area {
+        /* 地図エリア */
+        .map-area {
             background-color: var(--card-bg);
             padding: 15px;
             border-radius: 12px;
@@ -55,45 +55,20 @@
             margin-bottom: 20px;
         }
 
-        .search-container {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-        }
-
-        #address-input {
-            flex-grow: 1;
-            padding: 12px;
-            border: 1px solid #ddd;
-            border-radius: 8px;
-            font-size: 1rem;
-            min-width: 200px;
-        }
-
-        #search-btn {
-            padding: 12px 24px;
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: bold;
-        }
-
         #map {
-            height: 300px;
+            height: 350px;
             width: 100%;
             border-radius: 8px;
             border: 1px solid #ddd;
-            z-index: 1; /* Chart.jsのツールチップ等との干渉防止 */
+            z-index: 1;
         }
 
         .map-hint {
-            font-size: 0.8rem;
-            color: #666;
-            margin-top: 5px;
+            font-size: 0.9rem;
+            color: #555;
+            margin-top: 10px;
             text-align: center;
+            font-weight: bold;
         }
 
         .location-info {
@@ -208,16 +183,12 @@
     <div class="container">
         <header>
             <h1>GWeather</h1>
-            <p class="subtitle">地図をタップするか住所を入力して天気を表示</p>
+            <p class="subtitle">地図をタップして場所を選択してください</p>
         </header>
 
-        <div class="search-area">
-            <div class="search-container">
-                <input type="text" id="address-input" placeholder="住所、地名、駅名など" aria-label="住所入力">
-                <button id="search-btn">検索</button>
-            </div>
+        <div class="map-area">
             <div id="map"></div>
-            <p class="map-hint">地図をクリックするとその場所の天気を表示します</p>
+            <p class="map-hint">☝️ 地図をタップした場所の天気を表示します</p>
         </div>
 
         <div id="error-msg"></div>
@@ -253,8 +224,6 @@
         let map, marker;
 
         document.addEventListener('DOMContentLoaded', () => {
-            const addressInput = document.getElementById('address-input');
-            const searchBtn = document.getElementById('search-btn');
             const errorMsg = document.getElementById('error-msg');
             const loading = document.getElementById('loading');
             const locationDisplay = document.getElementById('location-display');
@@ -263,82 +232,39 @@
             const probDescText = document.getElementById('prob-desc');
 
             // --- 地図の初期化 ---
-            // デフォルトは岩国市周辺
-            const defaultLat = 34.16;
-            const defaultLon = 132.22;
+            // 保存された座標があればそれを使用、なければ岩国市
+            const savedLat = localStorage.getItem('last_lat') ? parseFloat(localStorage.getItem('last_lat')) : 34.16;
+            const savedLon = localStorage.getItem('last_lon') ? parseFloat(localStorage.getItem('last_lon')) : 132.22;
             
-            map = L.map('map').setView([defaultLat, defaultLon], 10);
+            map = L.map('map').setView([savedLat, savedLon], 10);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
                 attribution: '&copy; OpenStreetMap contributors'
             }).addTo(map);
 
-            marker = L.marker([defaultLat, defaultLon]).addTo(map);
+            marker = L.marker([savedLat, savedLon]).addTo(map);
 
             // 地図クリックイベント
             map.on('click', (e) => {
                 const { lat, lng } = e.latlng;
-                updateLocation(lat, lng, "地図で指定された地点");
+                updateLocation(lat, lng);
             });
 
-            // --- 保存された情報の読み込み ---
-            const savedLat = localStorage.getItem('last_lat');
-            const savedLon = localStorage.getItem('last_lon');
-            const savedName = localStorage.getItem('last_name') || "保存された地点";
+            // 初回表示
+            updateLocation(savedLat, savedLon, true);
 
-            if (savedLat && savedLon) {
-                updateLocation(parseFloat(savedLat), parseFloat(savedLon), savedName);
-            } else {
-                // 初期ロード時にデフォルト位置で取得
-                fetchWeather(defaultLat, defaultLon, "岩国市付近");
-            }
-
-            // --- 検索ロジック ---
-            searchBtn.addEventListener('click', () => {
-                const address = addressInput.value.trim();
-                if (address) searchByAddress(address);
-            });
-
-            addressInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    const address = addressInput.value.trim();
-                    if (address) searchByAddress(address);
-                }
-            });
-
-            async function searchByAddress(address) {
-                showLoading(true);
-                try {
-                    const geoURL = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(address)}&count=1&language=ja&format=json`;
-                    const res = await fetch(geoURL);
-                    const data = await res.json();
-
-                    if (!data.results || data.results.length === 0) {
-                        throw new Error('場所が見つかりませんでした。');
-                    }
-
-                    const loc = data.results[0];
-                    const name = `${loc.name}${loc.admin1 ? ', ' + loc.admin1 : ''}`;
-                    updateLocation(loc.latitude, loc.longitude, name);
-                } catch (err) {
-                    showError(err.message);
-                } finally {
-                    showLoading(false);
-                }
-            }
-
-            function updateLocation(lat, lon, name) {
+            async function updateLocation(lat, lon, isInitial = false) {
                 marker.setLatLng([lat, lon]);
-                map.setView([lat, lon], 13);
-                locationDisplay.textContent = `📍 ${name} (緯度:${lat.toFixed(3)}, 経度:${lon.toFixed(3)})`;
+                if (!isInitial) map.panTo([lat, lon]);
+                
+                locationDisplay.textContent = `📍 選択中の地点 (緯度:${lat.toFixed(3)}, 経度:${lon.toFixed(3)})`;
                 
                 localStorage.setItem('last_lat', lat);
                 localStorage.setItem('last_lon', lon);
-                localStorage.setItem('last_name', name);
 
-                fetchWeather(lat, lon, name);
+                fetchWeather(lat, lon);
             }
 
-            async function fetchWeather(lat, lon, name) {
+            async function fetchWeather(lat, lon) {
                 showLoading(true);
                 errorMsg.style.display = 'none';
                 try {
@@ -354,8 +280,6 @@
                     showLoading(false);
                 }
             }
-
-            // --- 以下、既存のロジック ---
 
             function updateSpecial17h(data) {
                 const hourly = data.hourly;
