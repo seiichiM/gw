@@ -3,9 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GWeather - どこでも天気予報</title>
+    <title>GWeather - 地図で選べる天気予報</title>
     <!-- Chart.js CDN -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Leaflet.js (Map) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -35,7 +38,7 @@
 
         header {
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
         }
 
         h1 {
@@ -43,14 +46,19 @@
             margin-bottom: 5px;
         }
 
-        .search-container {
+        /* 検索と地図のエリア */
+        .search-area {
             background-color: var(--card-bg);
-            padding: 20px;
+            padding: 15px;
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.05);
             margin-bottom: 20px;
+        }
+
+        .search-container {
             display: flex;
             gap: 10px;
+            margin-bottom: 15px;
             flex-wrap: wrap;
         }
 
@@ -71,21 +79,30 @@
             border-radius: 8px;
             cursor: pointer;
             font-weight: bold;
-            transition: background 0.3s;
         }
 
-        #search-btn:hover {
-            background-color: #005f87;
+        #map {
+            height: 300px;
+            width: 100%;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            z-index: 1; /* Chart.jsのツールチップ等との干渉防止 */
+        }
+
+        .map-hint {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 5px;
+            text-align: center;
         }
 
         .location-info {
             text-align: center;
-            margin-bottom: 20px;
+            margin: 20px 0;
             padding: 10px;
             background: #e3f2fd;
             border-radius: 8px;
             font-weight: bold;
-            display: none;
         }
 
         /* 17時降水確率の強調表示 */
@@ -150,12 +167,19 @@
             min-height: 0;
         }
 
-        .loading {
-            text-align: center;
-            padding: 40px;
-            font-size: 1.2rem;
-            color: #666;
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255,255,255,0.9);
+            padding: 20px 40px;
+            border-radius: 50px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            z-index: 9999;
             display: none;
+            font-weight: bold;
+            color: var(--primary-color);
         }
 
         #error-msg {
@@ -179,20 +203,25 @@
     </script>
 </head>
 <body>
+    <div id="loading">情報を取得中...</div>
+
     <div class="container">
         <header>
             <h1>GWeather</h1>
-            <p class="subtitle">住所を入力して、その場所の天気を表示します</p>
+            <p class="subtitle">地図をタップするか住所を入力して天気を表示</p>
         </header>
 
-        <div class="search-container">
-            <input type="text" id="address-input" placeholder="住所、地名、駅名など (例: 岩国市, 東京都新宿区)" aria-label="住所入力">
-            <button id="search-btn">検索</button>
+        <div class="search-area">
+            <div class="search-container">
+                <input type="text" id="address-input" placeholder="住所、地名、駅名など" aria-label="住所入力">
+                <button id="search-btn">検索</button>
+            </div>
+            <div id="map"></div>
+            <p class="map-hint">地図をクリックするとその場所の天気を表示します</p>
         </div>
 
         <div id="error-msg"></div>
-        <div id="loading" class="loading">情報を取得中...</div>
-        <div id="location-display" class="location-info"></div>
+        <div id="location-display" class="location-info">場所を選択してください</div>
 
         <!-- 17時の強調表示 -->
         <div id="special-17h" class="special-info">
@@ -221,6 +250,7 @@
 
     <script>
         let charts = {};
+        let map, marker;
 
         document.addEventListener('DOMContentLoaded', () => {
             const addressInput = document.getElementById('address-input');
@@ -232,68 +262,100 @@
             const prob17hText = document.getElementById('prob-17h');
             const probDescText = document.getElementById('prob-desc');
 
-            // 前回検索した場所を読み込む
-            const savedAddress = localStorage.getItem('last_address');
-            if (savedAddress) {
-                addressInput.value = savedAddress;
-                searchWeather(savedAddress);
+            // --- 地図の初期化 ---
+            // デフォルトは岩国市周辺
+            const defaultLat = 34.16;
+            const defaultLon = 132.22;
+            
+            map = L.map('map').setView([defaultLat, defaultLon], 10);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+
+            marker = L.marker([defaultLat, defaultLon]).addTo(map);
+
+            // 地図クリックイベント
+            map.on('click', (e) => {
+                const { lat, lng } = e.latlng;
+                updateLocation(lat, lng, "地図で指定された地点");
+            });
+
+            // --- 保存された情報の読み込み ---
+            const savedLat = localStorage.getItem('last_lat');
+            const savedLon = localStorage.getItem('last_lon');
+            const savedName = localStorage.getItem('last_name') || "保存された地点";
+
+            if (savedLat && savedLon) {
+                updateLocation(parseFloat(savedLat), parseFloat(savedLon), savedName);
+            } else {
+                // 初期ロード時にデフォルト位置で取得
+                fetchWeather(defaultLat, defaultLon, "岩国市付近");
             }
 
+            // --- 検索ロジック ---
             searchBtn.addEventListener('click', () => {
                 const address = addressInput.value.trim();
-                if (address) {
-                    searchWeather(address);
-                }
+                if (address) searchByAddress(address);
             });
 
             addressInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     const address = addressInput.value.trim();
-                    if (address) searchWeather(address);
+                    if (address) searchByAddress(address);
                 }
             });
 
-            async function searchWeather(address) {
-                errorMsg.style.display = 'none';
-                loading.style.display = 'block';
-                locationDisplay.style.display = 'none';
-                special17h.style.display = 'none';
-
+            async function searchByAddress(address) {
+                showLoading(true);
                 try {
-                    // 1. ジオコーディング (地名 -> 座標)
                     const geoURL = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(address)}&count=1&language=ja&format=json`;
-                    const geoRes = await fetch(geoURL);
-                    const geoData = await geoRes.json();
+                    const res = await fetch(geoURL);
+                    const data = await res.json();
 
-                    if (!geoData.results || geoData.results.length === 0) {
-                        throw new Error('場所が見つかりませんでした。別の言葉で試してください。');
+                    if (!data.results || data.results.length === 0) {
+                        throw new Error('場所が見つかりませんでした。');
                     }
 
-                    const location = geoData.results[0];
-                    const lat = location.latitude;
-                    const lon = location.longitude;
-                    const locationName = `${location.name}${location.admin1 ? ', ' + location.admin1 : ''}${location.country ? ' (' + location.country + ')' : ''}`;
-                    
-                    locationDisplay.textContent = `📍 現在の表示: ${locationName} (緯度:${lat.toFixed(2)}, 経度:${lon.toFixed(2)})`;
-                    locationDisplay.style.display = 'block';
-                    localStorage.setItem('last_address', address);
-
-                    // 2. 天気データ取得
-                    const weatherURL = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,precipitation_probability,precipitation&timezone=Asia%2FTokyo`;
-                    const weatherRes = await fetch(weatherURL);
-                    const weatherData = await weatherRes.json();
-
-                    renderGraphs(weatherData);
-                    updateSpecial17h(weatherData);
-
-                } catch (error) {
-                    console.error(error);
-                    errorMsg.textContent = error.message;
-                    errorMsg.style.display = 'block';
+                    const loc = data.results[0];
+                    const name = `${loc.name}${loc.admin1 ? ', ' + loc.admin1 : ''}`;
+                    updateLocation(loc.latitude, loc.longitude, name);
+                } catch (err) {
+                    showError(err.message);
                 } finally {
-                    loading.style.display = 'none';
+                    showLoading(false);
                 }
             }
+
+            function updateLocation(lat, lon, name) {
+                marker.setLatLng([lat, lon]);
+                map.setView([lat, lon], 13);
+                locationDisplay.textContent = `📍 ${name} (緯度:${lat.toFixed(3)}, 経度:${lon.toFixed(3)})`;
+                
+                localStorage.setItem('last_lat', lat);
+                localStorage.setItem('last_lon', lon);
+                localStorage.setItem('last_name', name);
+
+                fetchWeather(lat, lon, name);
+            }
+
+            async function fetchWeather(lat, lon, name) {
+                showLoading(true);
+                errorMsg.style.display = 'none';
+                try {
+                    const weatherURL = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,precipitation_probability,precipitation&timezone=Asia%2FTokyo`;
+                    const res = await fetch(weatherURL);
+                    const data = await res.json();
+
+                    renderGraphs(data);
+                    updateSpecial17h(data);
+                } catch (err) {
+                    showError("天気データの取得に失敗しました。");
+                } finally {
+                    showLoading(false);
+                }
+            }
+
+            // --- 以下、既存のロジック ---
 
             function updateSpecial17h(data) {
                 const hourly = data.hourly;
@@ -305,11 +367,7 @@
                 if (idx !== -1) {
                     const prob = hourly.precipitation_probability[idx];
                     prob17hText.textContent = `${prob}%`;
-                    
-                    let desc = "傘の準備を確認しましょう。";
-                    if (prob < 30) desc = "雨の心配は少なそうです。";
-                    else if (prob >= 70) desc = "雨が降る可能性が高いです。傘を忘れずに。";
-                    
+                    let desc = prob < 30 ? "雨の心配は少なそうです。" : (prob >= 70 ? "雨が降る可能性が高いです。傘を忘れずに。" : "念のため傘があると安心です。");
                     probDescText.textContent = desc;
                     special17h.style.display = 'block';
                 }
@@ -317,83 +375,56 @@
 
             function renderGraphs(data) {
                 const hourly = data.hourly;
-                
-                // 現在時刻 (JST) 以降のデータを検索
                 const nowJST = new Date(Date.now() + 9 * 60 * 60 * 1000);
                 const currentIsoJST = nowJST.toISOString().slice(0, 16);
-                
                 let startIndex = hourly.time.findIndex(t => t >= currentIsoJST);
                 if (startIndex === -1) startIndex = 0;
 
                 const count = 24;
                 const endIndex = Math.min(startIndex + count, hourly.time.length);
 
-                const labels = [];
-                const temps = [];
-                const probs = [];
-                const precips = [];
+                const labels = [], temps = [], probs = [], precips = [];
 
                 for (let i = startIndex; i < endIndex; i++) {
-                    const timeStr = hourly.time[i];
-                    const dateObj = new Date(timeStr);
+                    const dateObj = new Date(hourly.time[i]);
                     const hour = dateObj.getHours();
-                    const day = dateObj.getDate();
-                    
-                    let label = `${hour}:00`;
-                    if (hour === 0 || i === startIndex) {
-                        label = `${day}日 ${hour}:00`;
-                    }
-                    labels.push(label);
+                    labels.push(hour === 0 || i === startIndex ? `${dateObj.getDate()}日 ${hour}:00` : `${hour}:00`);
                     temps.push(hourly.temperature_2m[i]);
                     probs.push(hourly.precipitation_probability[i]);
                     precips.push(hourly.precipitation[i]);
                 }
 
-                const commonOptions = {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } }
-                };
-
-                // 各グラフを描画（既存のグラフがあれば破棄して再作成）
                 drawChart('tempChart', 'line', labels, '気温', temps, '#ffb703', 'rgba(255, 183, 3, 0.2)', '℃');
                 drawChart('rainChart', 'bar', labels, '降水確率', probs, '#0077b6', '#0077b6', '%', { min: 0, max: 100 });
                 drawChart('precipChart', 'bar', labels, '降水量', precips, '#4cc9f0', '#4cc9f0', 'mm', { min: 0 });
             }
 
             function drawChart(id, type, labels, label, data, color, bgColor, unit, scaleOpts = {}) {
-                if (charts[id]) {
-                    charts[id].destroy();
-                }
-
+                if (charts[id]) charts[id].destroy();
                 const ctx = document.getElementById(id).getContext('2d');
                 charts[id] = new Chart(ctx, {
                     type: type,
                     data: {
                         labels: labels,
-                        datasets: [{
-                            label: label,
-                            data: data,
-                            borderColor: color,
-                            backgroundColor: bgColor,
-                            borderWidth: 2,
-                            tension: 0.3,
-                            fill: type === 'line',
-                            borderRadius: type === 'bar' ? 4 : 0
-                        }]
+                        datasets: [{ label: label, data: data, borderColor: color, backgroundColor: bgColor, borderWidth: 2, tension: 0.3, fill: type === 'line', borderRadius: type === 'bar' ? 4 : 0 }]
                     },
                     options: {
                         responsive: true,
                         maintainAspectRatio: false,
                         plugins: { legend: { display: false } },
-                        scales: {
-                            y: {
-                                ...scaleOpts,
-                                title: { display: true, text: unit }
-                            }
-                        }
+                        scales: { y: { ...scaleOpts, title: { display: true, text: unit } } }
                     }
                 });
+            }
+
+            function showLoading(show) {
+                loading.style.display = show ? 'block' : 'none';
+            }
+
+            function showError(msg) {
+                errorMsg.textContent = msg;
+                errorMsg.style.display = 'block';
+                setTimeout(() => { errorMsg.style.display = 'none'; }, 5000);
             }
         });
     </script>
