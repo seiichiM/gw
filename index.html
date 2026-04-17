@@ -320,7 +320,7 @@
 
                 drawChart('tempChart', 'line', labels, '気温', temps, '#ffb703', 'rgba(255, 183, 3, 0.2)', '℃');
                 drawChart('rainChart', 'bar', labels, '降水確率', probs, '#0077b6', '#0077b6', '%', { min: 0, max: 100 });
-                drawChart('precipChart', 'bar', labels, '降水量', precips, '#4cc9f0', '#4cc9f0', 'mm', { min: 0 });
+                drawChart('precipChart', 'bar', labels, '降水量', precips, '#4cc9f0', '#4cc9f0', 'mm', { min: 0, suggestedMax: 5 });
             }
 
             function drawChart(id, type, labels, label, data, color, bgColor, unit, scaleOpts = {}) {
